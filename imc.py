@@ -1,9 +1,7 @@
-
 import streamlit as st
 import sqlite3
 from datetime import datetime, date
 import pandas as pd
-import matplotlib.pyplot as plt
 
 DB_PATH = "health_app.db"
 
@@ -75,7 +73,7 @@ COMMON_METS = {
     "polichinelos": 8.0,
     "yoga": 3.0,
     "treino HIIT (intenso)": 12.0,
-    "natação (moderada)": 8.0,
+    "natação (moderada)": 8.0
 }
 
 def calculate_imc(weight, height):
@@ -156,7 +154,6 @@ if menu == "Dashboard":
     else:
         st.info("Nenhum registro de saúde ainda.")
 
-    today = date.today().isoformat()
     logs = run_query('SELECT entry_datetime, name, duration_min, calories FROM exercise_log')
     df_logs = pd.DataFrame(logs, columns=["datetime", "name", "duration_min", "calories"]) if logs else pd.DataFrame()
     if not df_logs.empty:
@@ -166,20 +163,12 @@ if menu == "Dashboard":
         total_time = today_df['duration_min'].sum() if not today_df.empty else 0
         st.metric("Calorias queimadas hoje", f"{total_cal:.0f} kcal")
         st.metric("Tempo total de exercício hoje", f"{total_time:.0f} min")
+
+        agg = today_df.groupby('name')['duration_min'].sum().reset_index()
+        st.subheader("Distribuição de tempo de exercícios hoje")
+        st.dataframe(agg.rename(columns={'name':'Exercício', 'duration_min':'Tempo (min)'}))
     else:
         st.write("Nenhum exercício registrado ainda.")
-    
-    if not df_logs.empty:
-        today_df = df_logs[df_logs['date'] == date.today()]
-        if not today_df.empty:
-            agg = today_df.groupby('name')['duration_min'].sum()
-            fig, ax = plt.subplots(figsize=(6,6))
-            wedges, texts = ax.pie(agg, wedgeprops=dict(width=0.35), startangle=90)
-            ax.legend(wedges, agg.index, title="Exercícios", bbox_to_anchor=(1.1, 0.9))
-            ax.set_title(f"Distribuição de tempo de exercícios hoje ({int(agg.sum())} min)")
-            centre_circle = plt.Circle((0,0),0.70,fc='black')
-            fig.gca().add_artist(centre_circle)
-            st.pyplot(fig)
 
 if menu == "Registrar Saúde (IMC & Água)":
     st.header("Registrar Saúde: Peso, Altura e Água ")
@@ -228,140 +217,88 @@ if menu == "Queima de Calorias (Exercício)":
     if st.button("Calcular e registrar exercício"):
         calories = calories_burned(met, weight, duration_min)
         log_exercise(exercise_name, duration_min, calories, met)
-        st.success(f"Exercício salvo: {exercise_name} — {duration_min:.0f} min — {calories:.0f} kcal")
+        st.success(f"Exercício registrado! Você queimou aproximadamente {calories:.0f} kcal.")
 
 if menu == "Criar Treino":
-    st.header("Criar um treino (Rotina) ")
-    with st.form("routine_form"):
-        name = st.text_input("Nome do treino", "Treino Full Body")
-        type_ = st.selectbox("Tipo", ["casa", "academia"])
-        n_items = st.number_input("Quantos exercícios nesta rotina?", min_value=1, max_value=20, value=5, step=1)
-        items = []
-        for i in range(int(n_items)):
-            st.markdown(f"**Exercício {i+1}**")
-            ex_name = st.text_input(f"Nome {i+1}", value=f"Ex {i+1}", key=f"name_{i}")
-            sets = st.number_input(f"Séries {i+1}", min_value=0, max_value=10, value=3, key=f"sets_{i}")
-            reps = st.number_input(f"Repetições {i+1}", min_value=0, max_value=100, value=12, key=f"reps_{i}")
-            duration = st.number_input(f"Duração (min) {i+1}", min_value=0.0, value=0.0, key=f"dur_{i}")
-            items.append((ex_name, sets, reps, duration))
-        submit_routine = st.form_submit_button("Criar e salvar rotina")
-    if submit_routine:
-        rid = create_routine(name, type_)
-        for it in items:
-            add_routine_item(rid, it[0], int(it[1]), int(it[2]), float(it[3]))
-        st.success(f"Rotina '{name}' criada com sucesso!")
+    st.header("Criar um novo treino")
+    with st.form("workout_form"):
+        workout_name = st.text_input("Nome do treino")
+        workout_type = st.selectbox("Tipo de treino", ["Personalizado", "Cardio", "Força", "Flexibilidade"])
+        workout_exercises = st.text_area("Exercícios (um por linha, formato: nome, séries, repetições, duração em min)")
+        submitted = st.form_submit_button("Salvar treino")
+    if submitted:
+        if workout_name and workout_exercises:
+            routine_id = create_routine(workout_name, workout_type)
+            for line in workout_exercises.splitlines():
+                parts = line.split(',')
+                if len(parts) >= 4:
+                    ex_name = parts[0].strip()
+                    sets = int(parts[1].strip())
+                    reps = int(parts[2].strip())
+                    duration_min = float(parts[3].strip())
+                    add_routine_item(routine_id, ex_name, sets, reps, duration_min)
+            st.success("Treino salvo!")
+        else:
+            st.error("Por favor, preencha o nome do treino e os exercícios.")
 
 if menu == "Ver Treinos & Log":
-    st.header("Treinos criados")
-    routines = run_query('SELECT id, name, type, created_at FROM routines ORDER BY id DESC')
+    st.header("Seus treinos salvos")
+    routines = run_query('SELECT id, name, type, created_at FROM routines')
     if routines:
         for r in routines:
-            r_id, r_name, r_type, created_at = r
-            with st.expander(f"{r_name} — {r_type} — {created_at[:10]}"):
-                items = run_query('SELECT exercise_name, sets, reps, duration_min FROM routine_items WHERE routine_id=?', (r_id,))
-                st.table(pd.DataFrame(items, columns=["Exercício", "Séries", "Reps", "Duração (min)"]))
-                if st.button(f"Marcar rotina '{r_name}' como feita agora", key=f"do_{r_id}"):
-                    for it in items:
-                        ename, sets, reps, dur = it
-                        approx_dur = dur if dur and dur>0 else (sets * reps * 0.2)
-                        last = run_query('SELECT weight FROM health_entries ORDER BY id DESC LIMIT 1')
-                        weight = last[0][0] if last else 70.0
-                        matched_met = None
-                        for k,v in COMMON_METS.items():
-                            if k.split()[0].lower() in ename.lower():
-                                matched_met = v
-                                break
-                        met = matched_met if matched_met else 6.0
-                        calories = calories_burned(met, weight, approx_dur)
-                        log_exercise(ename, approx_dur, calories, met)
-                    st.success("Rotina registrada no log de exercícios.")
+            rid, name, type_, created_at = r
+            st.subheader(f"{name} ({type_})")
+            st.write(f"Criado em: {created_at}")
+            items = run_query('SELECT exercise_name, sets, reps, duration_min FROM routine_items WHERE routine_id=?', (rid,))
+            if items:
+                df_items = pd.DataFrame(items, columns=["Exercício", "Séries", "Repetições", "Duração (min)"])
+                st.dataframe(df_items)
+            else:
+                st.write("Nenhum exercício adicionado.")
     else:
-        st.info("Nenhuma rotina criada ainda.")
+        st.write("Nenhum treino salvo ainda.")
 
-    st.markdown("---")
-    st.header("Log de exercícios")
-    logs = run_query('SELECT id, entry_datetime, name, duration_min, calories FROM exercise_log ORDER BY id DESC LIMIT 200')
-    if logs:
-        df = pd.DataFrame(logs, columns=["id", "datetime", "name", "duration_min", "calories"])
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        st.dataframe(df)
-        if st.button("Limpar histórico de exercícios"):
-            run_query('DELETE FROM exercise_log')
-            st.warning("Histórico apagado. Recarregue a página.")
+    st.write("Log de exercícios:")
+    log_items = run_query('SELECT entry_datetime, name, duration_min, calories FROM exercise_log ORDER BY entry_datetime DESC')
+    if log_items:
+        df_logs = pd.DataFrame(log_items, columns=["Data", "Exercício", "Duração (min)", "Calorias"])
+        st.dataframe(df_logs)
     else:
         st.write("Nenhum exercício registrado ainda.")
 
 if menu == "Progresso e Gráficos":
-    st.header("Progresso — evolução dos seus dados ")
-    health = run_query('SELECT id, entry_date, weight, height, imc, cups FROM health_entries ORDER BY id')
-    if health:
-        df_h = pd.DataFrame(health, columns=["id","date","weight","height","imc","cups"])
-        df_h['date'] = pd.to_datetime(df_h['date'])
-        df_h = df_h.set_index('date')
-        st.subheader("IMC ao longo do tempo")
-        fig, ax = plt.subplots()
-        ax.plot(df_h.index, df_h['imc'], marker='o')
-        ax.set_ylabel("IMC")
-        ax.set_xlabel("Data")
-        ax.grid(alpha=0.3)
-        st.pyplot(fig)
+    st.header("Progresso e Gráficos")
+    health_data = run_query('SELECT entry_date, weight, imc, cups FROM health_entries ORDER BY entry_date')
+    if health_data:
+        df_health = pd.DataFrame(health_data, columns=["Data", "Peso", "IMC", "Copos de Água"])
+        st.subheader("Dados de Saúde")
+        st.dataframe(df_health)
 
-        st.subheader("Peso ao longo do tempo")
-        fig2, ax2 = plt.subplots()
-        ax2.plot(df_h.index, df_h['weight'], marker='o')
-        ax2.set_ylabel("Peso (kg)")
-        ax2.set_xlabel("Data")
-        ax2.grid(alpha=0.3)
-        st.pyplot(fig2)
+        st.subheader("Gráfico de Peso ao Longo do Tempo")
+        df_health['Data'] = pd.to_datetime(df_health['Data'])
+        st.line_chart(df_health.set_index('Data')['Peso'])
 
-        st.subheader("Ingestão de água (copos) — histórico")
-        fig3, ax3 = plt.subplots()
-        ax3.bar(df_h.index, df_h['cups'])
-        ax3.set_ylabel("Copos (200 mL)")
-        ax3.set_xlabel("Data")
-        st.pyplot(fig3)
+        st.subheader("Gráfico de IMC ao Longo do Tempo")
+        st.line_chart(df_health.set_index('Data')['IMC'])
+
+        st.subheader("Consumo de Água ao Longo do Tempo")
+        st.bar_chart(df_health.set_index('Data')['Copos de Água'])
     else:
-        st.info("Sem registros de saúde para mostrar gráficos.")
+        st.write("Nenhum dado de saúde registrado ainda.")
 
-    logs = run_query('SELECT entry_datetime, name, duration_min, calories FROM exercise_log')
-    if logs:
-        df_logs = pd.DataFrame(logs, columns=["datetime","name","duration_min","calories"])
-        df_logs['date'] = pd.to_datetime(df_logs['datetime']).dt.date
-        st.subheader("Resumo de exercícios")
-        agg = df_logs.groupby('name').agg({'duration_min':'sum','calories':'sum','datetime':'count'}).rename(columns={'datetime':'count'}).reset_index()
-        st.dataframe(agg.sort_values('duration_min', ascending=False))
+    exercise_data = run_query('SELECT entry_datetime, name, duration_min, calories FROM exercise_log ORDER BY entry_datetime')
+    if exercise_data:
+        df_exercise = pd.DataFrame(exercise_data, columns=["Data", "Exercício", "Duração (min)", "Calorias"])
+        df_exercise['Data'] = pd.to_datetime(df_exercise['Data'])
+        st.subheader("Dados de Exercício")
+        st.dataframe(df_exercise)
 
-        fig4, ax4 = plt.subplots(figsize=(8,4))
-        names = agg['name']
-        ax4.barh(names, agg['duration_min'])
-        ax4.set_xlabel("Tempo total (min)")
-        ax4.set_ylabel("Exercício")
-        st.pyplot(fig4)
+        st.subheader("Calorias Queimadas ao Longo do Tempo")
+        cal_per_day = df_exercise.groupby(df_exercise['Data'].dt.date)['Calorias'].sum()
+        st.bar_chart(cal_per_day)
 
-        st.subheader("Onde você precisa praticar mais")
-        agg['prop'] = agg['duration_min'] / (agg['duration_min'].max() if agg['duration_min'].max()>0 else 1)
-        need = agg.sort_values('prop').head(5)
-        for _, row in need.iterrows():
-            st.write(f"- {row['name']}: tempo total {row['duration_min']:.0f} min ({row['count']} registros). Tente praticar mais este exercício.")
-        
-        top = agg.sort_values('duration_min', ascending=False).head(6)
-        fig5, ax5 = plt.subplots(figsize=(5,5))
-        values = top['duration_min']
-        labels = top['name']
-        wedges, texts = ax5.pie(values, wedgeprops=dict(width=0.35), startangle=90)
-        ax5.legend(wedges, labels, title="Top exercícios", bbox_to_anchor=(1.1, 0.9))
-        centre_circle = plt.Circle((0,0),0.70,fc='white')
-        fig5.gca().add_artist(centre_circle)
-        ax5.set_title("Distribuição de tempo entre principais exercícios")
-        st.pyplot(fig5)
-
+        st.subheader("Duração Total de Exercícios ao Longo do Tempo")
+        dur_per_day = df_exercise.groupby(df_exercise['Data'].dt.date)['Duração (min)'].sum()
+        st.bar_chart(dur_per_day)
     else:
-        st.info("Nenhum exercício registrado para gerar gráficos.")
-
-    st.subheader("Últimos inputs do usuário")
-    last_health = run_query('SELECT entry_date, weight, height, imc, cups FROM health_entries ORDER BY id DESC LIMIT 7')
-    if last_health:
-        df_last = pd.DataFrame(last_health, columns=["date","weight","height","imc","cups"])
-        st.table(df_last)
-    else:
-        st.write("Nenhum dado salvo ainda.")
+        st.write("Nenhum dado de exercício registrado ainda.")
